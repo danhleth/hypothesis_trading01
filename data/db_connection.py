@@ -81,7 +81,7 @@ class DataConnection():
                     WHERE ft.futurecode='VN30F1M'
                     AND m.datetime >= '{current_date.strftime('%Y-%m-%d')} {start_hour.strftime('%H:%M:%S')}'
                     AND m.datetime <= '{current_date.strftime('%Y-%m-%d')} 23:59:00'
-                    AND m.datetime::time > '11:29:45'
+                    AND m.datetime::time > '{end_hour.strftime('%H:%M:%S')}'
                     ORDER BY m.datetime ASC
                     LIMIT 1
             '''
@@ -98,8 +98,15 @@ class DataConnection():
         start_datas = pd.DataFrame(start_datas, columns=['start_time', 'start_price'])
         end_datas = pd.DataFrame(end_datas, columns=['end_time', 'end_price'])
         datas = pd.concat([start_datas, end_datas], axis=1)
-        return datas
+        return self.format_data(datas)
 
+    def format_data(self, df):
+        data = df.copy()
+        data['start_time'] = pd.to_datetime(data['start_time'])
+        data['end_time'] = pd.to_datetime(data['end_time'])
+        data['start_price'] = data['start_price'].astype(float)
+        data['end_price'] = data['end_price'].astype(float)
+        return data
 
     def close(self):
         self.cursor.close()

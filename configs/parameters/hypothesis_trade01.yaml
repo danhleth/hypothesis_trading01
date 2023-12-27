@@ -2,12 +2,23 @@
 # Short at 10:30:00
 # Close at 11:29:45
 
+
+
 ALGO:
   name: "trade01"
   version: "1.0.0"
   description: "Short at 10:30:00, Close at 11:29:45"
-  output_dir: "runs/trade01"
-
+  
+opts:
+  save_dir: "runs/trade01"
+  maturity: True
+  time:
+    start_date: "2021-01-01"
+    end_date: "2022-12-31"
+    start_time: "10:30:00"
+    end_time: "11:29:45"
+    second_delay: 10
+    
 
 DATASET:
   TRAIN:

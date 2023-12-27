@@ -1,47 +1,83 @@
 """
 Modified from https://github.com/PaddlePaddle/PaddleOCR/blob/release/2.4/tools/program.py
 """
-import os
-import sys
-import platform
-import yaml
-import time
-import shutil
-import paddle
-import paddle.distributed as dist
-from tqdm import tqdm
+from typing import Optional
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
-
-from ppocr.utils.stats import TrainingStats
-from ppocr.utils.save_load import save_model
-from ppocr.utils.utility import print_dict
-from ppocr.utils.logging import get_logger
-from ppocr.utils import profiler
-from ppocr.data import build_dataloader
-import numpy as np
+import yaml
+import json
+from datetime import datetime
+from pathlib import Path
+from utils.loading_file import load_yaml
+from utils.path_management import increment_path
 
 
-class ArgsParser(ArgumentParser):
-    def __init__(self):
-        super(ArgsParser, self).__init__(
-            formatter_class=RawDescriptionHelpFormatter)
-        self.add_argument("-c", "--config", help="configuration file to use")
-        self.add_argument(
-            "-o", "--opt", nargs='+', help="set configuration options")
-        self.add_argument(
-            '-p',
-            '--profiler_options',
-            type=str,
-            default=None,
-            help='The option of profiler, which should be in format \"key1=value1;key2=value2;key3=value3\".'
-        )
+class Config(dict):
+    """Single level attribute dict, NOT recursive"""
+
+    def __init__(self, yaml_path):
+        super(Config, self).__init__()
+
+        config = load_yaml(yaml_path)
+        super(Config, self).update(config)
+
+    def __getattr__(self, key):
+        if key in self:
+            return self[key]
+        raise AttributeError("object has no attribute '{}'".format(key))
+
+    def save_yaml(self, path):
+        print(f"Saving config to {path}...")
+        with open(path, "w") as f:
+            yaml.dump(dict(self), f, default_flow_style=False, sort_keys=False)
+
+    @classmethod
+    def load_yaml(cls, path):
+        print(f"Loading config from {path}...")
+        return cls(path)
+
+    def __repr__(self) -> str:
+        return str(json.dumps(dict(self), sort_keys=False, indent=4))
+
+class OptsObject():
+    def __init__(self, opts) -> None:
+        """opts: (dcit)
+            return instance recursive opts
+            which can access directly by opts.xxx
+        """
+        for k, v in opts.items():
+            if isinstance(v, dict):
+                setattr(self, k, OptsObject(v))
+            else:
+                setattr(self, k, v)
+    
+    # def __repr__(self) -> str:
+    #     """return opts"""
+    #     return str(self.__class__.__name__)
+
+class Opts(ArgumentParser):
+
+    def __init__(self, cfg: Optional[str] = None):
+        super(Opts, self).__init__(formatter_class=RawDescriptionHelpFormatter)
+        self.add_argument("-c",
+                          "--config",
+                          default=cfg,
+                          help="configuration file to use")
+        self.add_argument("-o",
+                          "--opt",
+                          nargs="+",
+                          help="override configuration options")
 
     def parse_args(self, argv=None):
-        args = super(ArgsParser, self).parse_args(argv)
-        assert args.config is not None, \
-            "Please specify --config=configure_file_path."
+        args = super(Opts, self).parse_args(argv)
+        assert args.config is not None, "Please specify --config=configure_file_path."
         args.opt = self._parse_opt(args.opt)
-        return args
+
+        config = Config(args.config)
+        config = self.override(config, args.opt)
+        save_path = increment_path(Path(config["opts"]["save_dir"])/"exp")  # increment run
+        config["opts"]["save_dir"] = save_path
+        print(f"The output will be saved to {save_path}")
+        return config
 
     def _parse_opt(self, opts):
         config = {}
@@ -49,66 +85,39 @@ class ArgsParser(ArgumentParser):
             return config
         for s in opts:
             s = s.strip()
-            k, v = s.split('=')
+            k, v = s.split("=")
             config[k] = yaml.load(v, Loader=yaml.Loader)
         return config
 
-
-class AttrDict(dict):
-    """Single level attribute dict, NOT recursive"""
-
-    def __init__(self, **kwargs):
-        super(AttrDict, self).__init__()
-        super(AttrDict, self).update(kwargs)
-
-    def __getattr__(self, key):
-        if key in self:
-            return self[key]
-        raise AttributeError("object has no attribute '{}'".format(key))
-
-
-global_config = AttrDict()
-
-default_config = {'Global': {'debug': False, }}
-
-
-def load_config(file_path):
-    """
-    Load config from yml/yaml file.
-    Args:
-        file_path (str): Path of the config file to be loaded.
-    Returns: global config
-    """
-    merge_config(default_config)
-    _, ext = os.path.splitext(file_path)
-    assert ext in ['.yml', '.yaml'], "only support yaml files for now"
-    merge_config(yaml.load(open(file_path, 'rb'), Loader=yaml.Loader))
-    return global_config
-
-
-def merge_config(config):
-    """
-    Merge config into global config.
-    Args:
-        config (dict): Config to be merged.
-    Returns: global config
-    """
-    for key, value in config.items():
-        if "." not in key:
-            if isinstance(value, dict) and key in global_config:
-                global_config[key].update(value)
-            else:
-                global_config[key] = value
-        else:
-            sub_keys = key.split('.')
-            assert (
-                sub_keys[0] in global_config
-            ), "the sub_keys can only be one of global_config: {}, but get: {}, please check your running command".format(
-                global_config.keys(), sub_keys[0])
-            cur = global_config[sub_keys[0]]
-            for idx, sub_key in enumerate(sub_keys[1:]):
-                if idx == len(sub_keys) - 2:
-                    cur[sub_key] = value
+    def override(self, global_config, overriden):
+        """
+        Merge config into global config.
+        Args:
+            config (dict): Config to be merged.
+        Returns: global config
+        """
+        print("Overriding configurating")
+        for key, value in overriden.items():
+            if "." not in key:
+                if isinstance(value, dict) and key in global_config:
+                    global_config[key].update(value)
                 else:
-                    cur = cur[sub_key]
-
+                    if key in global_config.keys():
+                        global_config[key] = value
+                    print(f"'{key}' not found in config")
+            else:
+                sub_keys = key.split(".")
+                assert (
+                    sub_keys[0] in global_config
+                ), "the sub_keys can only be one of global_config: {}, but get: {}, please check your running command".format(
+                    global_config.keys(), sub_keys[0])
+                cur = global_config[sub_keys[0]]
+                for idx, sub_key in enumerate(sub_keys[1:]):
+                    if idx == len(sub_keys) - 2:
+                        if sub_key in cur.keys():
+                            cur[sub_key] = value
+                        else:
+                            print(f"'{key}' not found in config")
+                    else:
+                        cur = cur[sub_key]
+        return global_config

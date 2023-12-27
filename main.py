@@ -7,39 +7,33 @@ import os
 from datetime import date, timedelta, datetime
 from data.db_connection import DataConnection
 from src.backtest import BacktestDerivatives
-from utils.path_management import increment_path
+from src.pipeline import Pipeline
+from utils.argument_management import Opts
+from utils.loading_file import load_yaml
 
-db_name = "algotradeDB"
-host = "algotrade.vn"
-user = ""
-port = 52
-password = "h"
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]
 
 
 def main():
-
+    FLAGS = Opts().parse_args()
+    db_account = load_yaml(ROOT / "configs" / "usr" / "db_account.yaml")
     # Data query
+    user, password, host, port, db_name =   db_account['user'],\
+                                            db_account['pass'], \
+                                            db_account['host'], \
+                                            db_account['port'], \
+                                            db_account['database']
     db_conn = DataConnection(user, password, host, port, db_name)
 
-    df = db_conn.get_derivative_matched_data('2022-09-01', 
-                  '2023-12-01',
-                  '10:30:00',
-                  '11:29:45', 
-                  10)
-    df.to_csv("dataset/data_timedelay10_before112945.csv", index=False)
+    # Pipeline
+    pipeline = Pipeline(FLAGS, db_conn)
+    pipeline.backtest()
 
-
-    backtest = BacktestDerivatives('2022-09-01', 
-                  '2023-12-01',
-                  '10:30:00',
-                  '11:29:45')
     
-    save_dir = increment_path(Path(ROOT) / 'exp', exist_ok=True)  # increment run
-    backtest.run_from_csv("dataset/data_timedelay10_after113045.csv", report=True)
-    backtest.visualize()
+    
+    
 
 if __name__ == "__main__":
     main()
